@@ -1,0 +1,154 @@
+# SingProbe training config -- SGLang hidden-state backend (singprobe_model.arch="attn").
+#
+# singprobe_model.arch == "attn": the SingProbe model is the "attn" token probe
+# (class GuardAttnProbe, models/sglang_attn.py). The Base Model's tapped layer
+# features (per-layer rmsnorm(hidden_states + residual), dumped by the SGLang
+# identity probe) are projected by separate proj_q/proj_k/proj_v --
+# multi-query attention with one shared K/V head -- run through causal MQA
+# along the token sequence, then an attention output projection (o_proj), an
+# additive query residual (h = q + o), a post-residual RMSNorm, and a
+# per-token linear classifier. NO input normalization on the probe (the dump
+# path already rms-normalizes the features). num_query_heads / head_dim /
+# sliding_window are the only probe knobs that matter here.
+#
+# Run with:
+#   bash scripts/all/ling-3.0-flash.sh
+# (starts the SGLang hidden-state server, trains the probe, converts the
+# final checkpoint to safetensors; see scripts/run_train_pipeline.sh)
+
+base_model:
+  # HuggingFace repo ID of the Base Model (a local path to a downloaded copy
+  # works too). On the sglang backend this is BOTH the tokenizer source
+  # (train.py) AND the SGLang server's --model-path (launched by the pipeline
+  # script), so swapping models is a single edit here. Repo IDs are downloaded
+  # from the HuggingFace Hub on first use.
+  name: "inclusionAI/Ling-3.0-flash"
+  hidden_layers: [13,26,40] # [13,26,40] for default, [6,12,18,24,30,36,42] for all non-linear attention output
+  hidden_size: 2560          # per-layer hidden size; must match the model
+
+  inference:
+    framework: "sglang"
+    dtype: "bfloat16"
+    kernel_inject: false   # unused by the SGLang path
+
+    # SGLang hidden-state client:
+    sglang_url: "http://127.0.0.1:6000"
+    sglang_save_dir: "/dev/shm/save_probe"   # tmpfs; must match the pipeline's SAVE_DIR
+    sglang_probe_ckpt: "path/to/probe_ckpt"   # writable dir; must match the pipeline's PROBE_CKPT
+    sglang_timeout: 1200.0
+    sglang_max_concurrency: 128
+
+    # SGLang server launch params (shell env TP=/DP=/GPUS= still overrides).
+    sglang_tp: 4
+    sglang_dp: 3
+    sglang_gpus: "4,5,6,7,8,9,10,11,12,13,14,15"
+
+# singprobe_model config is auto-detected from base_model (hidden_layers + probe hidden_size)
+singprobe_model:
+  # "attn" token probe (class GuardAttnProbe, models/sglang_attn.py). The
+  # tapped layer features (per-layer rmsnorm(hidden_states + residual), as
+  # dumped by the SGLang identity probe) are projected by separate
+  # proj_q/proj_k/proj_v (one shared K/V head = MQA), run through causal
+  # multi-query attention along the token sequence, then an o_proj (W_O) on
+  # the SDPA context, the query added back as the residual (h = q + o), a
+  # post-residual RMSNorm, and a per-token linear classifier with bias.
+  # NO input normalization here -- the SGLang dump path already rms-normalizes
+  # (hidden+residual) per tapped layer.
+  arch: "attn"
+
+  num_classes: 10
+  init_bias: 0.0
+
+  # --- attn configuration (only these matter for arch: "attn") ---
+  # Multi-query attention: num_query_heads query heads share ONE K/V head, each
+  # head_dim wide. The classifier input is num_query_heads * head_dim.
+  num_query_heads: 4
+  head_dim: 64
+
+  # Causal attention window size in tokens. 0 = full causal (each token attends
+  # to ALL preceding tokens, fused flash kernel, fastest). A positive W bounds
+  # each token to the last W tokens (causal sliding window); peak attention
+  # memory then scales with W rather than the full sequence length. Set W >=
+  # max_seq_length to recover full causal behavior.
+  sliding_window: 2048
+training:
+  epochs: 2
+  batch_size: 32          # smaller -- each batch fans out to SGLang prefill
+  learning_rate: 0.001
+  weight_decay: 0.01
+  lr_scheduler_type: "cosine_with_warmup" # "constant" or "cosine_with_warmup"
+  warmup_ratio: 0.05
+  gradient_accumulation_steps: 4
+  max_grad_norm: 2.0
+
+  use_amp: true
+  amp_dtype: "bfloat16"
+
+  save_steps: 1000          # disable periodic save for a quick smoke
+  eval_steps: 1000
+  output_dir: "path/to/checkpoints/Ling-3.0-flash/attn"
+
+  # Diagnostics: log a per-step phase-timing breakdown (SGLang send / dump read
+  # / assemble / probe fwd / bwd / opt) every N micro-batches. 0 disables.
+  profile_every: 0
+
+  task_ratios:
+    safety: 3.0
+    hallucination: 1.1
+
+  query_weight: 1.0
+  safety_weight: 1.0
+  hallucination_weight: 1.0
+
+  # pos_weight (per-batch class-imbalance weighting) -- configured per task,
+  # no global switch. Decoupled so e.g. Hallu can use pos_weight while Safety
+  # stays unweighted. Avoid enabling pos_weight AND confidence weighting on the
+  # SAME task (BCE NaN cliff).
+  use_safety_class_weight: false
+  use_hallu_class_weight: false
+
+  # Confidence weighting -- per task, same scheme as pos_weight.
+  use_safety_confidence_weight: true
+  use_hallu_confidence_weight: true
+  confidence_aggregator: "beta" # "beta" or "softmax"
+  confidence_temperature: 1.0
+  confidence_min_weight: 0.0
+  confidence_beta_tau: 0.35
+  confidence_weight_detach: true   # true => detach the confidence weights (only per-token BCE carries gradient)
+
+  dynamic_task_weight: true
+  ema_decay: 0.9
+
+  safe_weight: 1.0
+  mutex_weight: 0.1
+
+  use_single_token_as_query: false
+
+  # POS assertion mask for the Hallu task (dim 9 ONLY). When true, the dataset
+  # computes a per-response-token content-word mask (spaCy en_core_web_sm POS not
+  # in {PUNCT,ADP,DET,AUX,CCONJ,SCONJ,PRON,SPACE,PART}) and the loss ANDs it into
+  # hallu_mask, so function-word Response tokens become unsupervised for Hallu.
+  # Safety (dim 8) / Query (dims 0-7) are unaffected. Requires spaCy + the model
+  # reachable; scripts/run_train_pipeline.sh exports SPACY_MODEL_PATH for that.
+  use_hallu_assertion_mask: false
+
+data:
+  # NOTE: point these at your own dataset files (JSON Lines) before running.
+  train_safety_path: "path/to/safety_train.jsonl"
+  train_hallu_path: "path/to/hallucination_train.jsonl"
+  val_safety_path: "path/to/safety_val.jsonl"
+  val_hallu_path: "path/to/hallucination_val.jsonl"
+
+  train_sample_size: null
+  val_sample_size: null
+  val_split_ratio: 0.01
+
+  max_seq_length: 8192     # short for a quick smoke; raise for real runs
+  num_workers: 32
+  pin_memory: true
+  prefetch_batches: 2
+  timeout: 30
+
+distributed:
+  backend: "nccl"
+  master_port: 29500
