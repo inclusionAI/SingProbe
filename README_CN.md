@@ -199,3 +199,5 @@ SingProbe/
 ## 法律声明
 
 使用前请阅读 [`LEGAL.md`](LEGAL.md)。
+
+更多信息请参阅[技术报告](SingProbe_Technical_Report.pdf)。

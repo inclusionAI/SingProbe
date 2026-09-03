@@ -212,3 +212,5 @@ Please read [`LEGAL.md`](LEGAL.md) before use.
   year = {2026},
 }
 ```
+
+For more information, please refer to the [technical report](SingProbe_Technical_Report.pdf).
