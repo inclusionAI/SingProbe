@@ -4,6 +4,8 @@
 
 基于冻结 Base Model（如 Ling-3.0-flash）多层 hidden states 的轻量级 **token 级探针（probe）训练框架**：冻结的 Base Model 由带 token-probe 补丁的 SGLang 拉起做前向推理，把指定层的每 token hidden states 实时 dump 到 tmpfs；训练侧的 **SingProbe 模型**在这些 hidden states 上做流式训练，输出**每 token 的 10 维 logits**。
 
+本仓库随训练代码提供 SGLang 推理框架，可用于提取 hidden states 和加载训练好的 SingProbe。支持的底座和启动命令见 [token-probe 推理指南](sglang/README.md#token-probe-inference)。
+
 > Base Model 全部 `requires_grad=False`，仅做推理抽取 hidden states；**只有探针模型被训练**。
 
 ## 方案概览
@@ -62,14 +64,16 @@ pip install transformers safetensors pyyaml numpy tqdm
 
 ### 2. 带 token probe 补丁的 SGLang（必需）
 
-hidden states 抽取依赖带 **token-probe 补丁**的 SGLang（上游标准版没有该 dump 能力），从 token-probe 分支编译安装：
+使用 DeepSeek-V4.1-Flash、Ling-3.1-flash、Qwen3.8-Flash-Next 或 GLM-5.3-Flash 时，请在具备 Python 3.12 和 Rust 工具链的 Linux CUDA 环境中，从 SingProbe 根目录安装内置版本。
 
 ```bash
-# 需先安装构建工具：pip install build
-git clone -b token-probe-ling3-flash-main https://github.com/jinzhen-lin/sglang.git
-cd sglang/python
-python -m build --wheel --no-isolation
-pip install dist/*.whl --force --no-deps
+python -m pip install ./sglang/python
+```
+
+下文的 Ling-3.0 训练示例使用 [Ling-3.0 适配分支](https://github.com/jinzhen-lin/sglang/tree/token-probe-ling3-flash-main)。运行这些示例时，在对应训练环境中安装该分支：
+
+```bash
+python -m pip install "git+https://github.com/jinzhen-lin/sglang.git@token-probe-ling3-flash-main#subdirectory=python"
 ```
 
 ### 3. flash-linear-attention（Ling-3.0 必需）

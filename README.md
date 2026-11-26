@@ -4,6 +4,8 @@
 
 A lightweight **token-level probe training framework** built on the multi-layer hidden states of a frozen Base Model (e.g. Ling-3.0-flash). The frozen Base Model is served by a token-probe-patched SGLang build for forward inference, dumping the per-token hidden states of the configured layers to tmpfs in real time; the training-side **SingProbe model** trains on these hidden states in a streaming fashion and finally outputs **10-dim logits per token**.
 
+This repository includes the SGLang inference framework used to extract hidden states and serve trained SingProbe heads. See the [token-probe quickstart](sglang/README.md#token-probe-inference) for supported base models and launch commands.
+
 > The Base Model is entirely `requires_grad=False` and only runs inference to extract hidden states; **only the probe model is trained**.
 
 ## Overview
@@ -62,14 +64,16 @@ pip install transformers safetensors pyyaml numpy tqdm
 
 ### 2. Token-probe-patched SGLang (required)
 
-Hidden-state extraction requires the **token-probe-patched** SGLang build (upstream SGLang has no such dump capability). Build and install it from the token-probe branch:
+For DeepSeek-V4.1-Flash, Ling-3.1-flash, Qwen3.8-Flash-Next, and GLM-5.3-Flash, install the bundled implementation from the SingProbe repository root in a Linux CUDA environment with Python 3.12 and a Rust toolchain.
 
 ```bash
-# build tool required first: pip install build
-git clone -b token-probe-ling3-flash-main https://github.com/jinzhen-lin/sglang.git
-cd sglang/python
-python -m build --wheel --no-isolation
-pip install dist/*.whl --force --no-deps
+python -m pip install ./sglang/python
+```
+
+The Ling-3.0 training examples below use the [Ling-3.0 integration branch](https://github.com/jinzhen-lin/sglang/tree/token-probe-ling3-flash-main). To run those examples, install that branch in their training environment:
+
+```bash
+python -m pip install "git+https://github.com/jinzhen-lin/sglang.git@token-probe-ling3-flash-main#subdirectory=python"
 ```
 
 ### 3. flash-linear-attention (required for Ling-3.0)
